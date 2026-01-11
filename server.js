@@ -4,139 +4,111 @@ import nodemailer from "nodemailer";
 
 const app = express();
 
-// ---- Config ----
+/* =========================
+   BASIC CONFIG
+========================= */
 const PORT = process.env.PORT || 8080;
 
-// Simple API key protection (same key you store in Base44)
-const API_KEY = process.env.API_KEY || "";
+/* =========================
+   SECURITY (API KEY)
+========================= */
+const EMAIL_API_KEY = process.env.EMAIL_API_KEY || "";
 
-// Gmail App Password setup
-const EMAIL_PROVIDER = (process.env.EMAIL_PROVIDER || "gmail").toLowerCase();
-const GMAIL_USER = process.env.GMAIL_USER || "";
-const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || "";
+/* =========================
+   GMAIL CONFIG (ENV VARS)
+========================= */
+const GMAIL_USER = process.env.GMAIL_USER;
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
 
-const FROM_NAME = process.env.FROM_NAME || "Capital Pro";
 const FROM_EMAIL = process.env.FROM_EMAIL || GMAIL_USER;
 
-// ---- Middleware ----
+/* =========================
+   VALIDATION CHECK
+========================= */
+if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
+  console.error("❌ Missing GMAIL_USER or GMAIL_APP_PASSWORD");
+}
+
+/* =========================
+   MIDDLEWARE
+========================= */
 app.use(express.json({ limit: "2mb" }));
 
-// CORS (lets Hoppscotch + Base44 call the API)
 app.use(
   cors({
-    origin: true,
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-api-key"],
+    origin: "*",
+    methods: ["POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "x-api-key"],
   })
 );
-app.options("*", cors());
 
-// ---- Helpers ----
-function requireApiKey(req, res) {
-  if (!API_KEY) return true; // if not set, do not block (useful for early testing)
-  const key = req.headers["x-api-key"];
-  if (!key || key !== API_KEY) {
-    res.status(401).json({ error: "Unauthorized (missing/invalid x-api-key)" });
-    return false;
-  }
-  return true;
-}
+/* =========================
+   API KEY GUARD
+========================= */
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") return next();
 
-function buildTransporter() {
-  if (EMAIL_PROVIDER !== "gmail") {
-    throw new Error(`Unsupported EMAIL_PROVIDER: ${EMAIL_PROVIDER}`);
-  }
-  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
-    throw new Error("Missing GMAIL_USER or GMAIL_APP_PASSWORD env var");
+  const apiKey = req.headers["x-api-key"];
+
+  if (!EMAIL_API_KEY || apiKey !== EMAIL_API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
   }
 
-  return nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-      user: GMAIL_USER,
-      pass: GMAIL_APP_PASSWORD,
-    },
-  });
-}
-
-// ---- Routes ----
-app.get("/health", (req, res) => {
-  res.json({
-    status: "ok",
-    service: "capitalpro-email-service",
-    time: new Date().toISOString(),
-  });
+  next();
 });
 
-// Send email
-// POST /send-email
-// Headers: x-api-key: <API_KEY> (if API_KEY env is set)
-// Body: { to, subject, html, text?, replyTo?, cc?, bcc?, organizationId?, meta? }
+/* =========================
+   EMAIL TRANSPORT
+========================= */
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: GMAIL_USER,
+    pass: GMAIL_APP_PASSWORD,
+  },
+});
+
+/* =========================
+   SEND EMAIL ENDPOINT
+========================= */
 app.post("/send-email", async (req, res) => {
   try {
-    if (!requireApiKey(req, res)) return;
+    const { to, subject, text, html } = req.body;
 
-    const {
-      to,
-      subject,
-      html,
-      text,
-      replyTo,
-      cc,
-      bcc,
-      organizationId,
-      meta,
-    } = req.body || {};
-
-    if (!to || !subject || (!html && !text)) {
+    if (!to || !subject || (!text && !html)) {
       return res.status(400).json({
         error: "Missing required fields",
-        required: ["to", "subject", "html OR text"],
       });
     }
 
-    const transporter = buildTransporter();
-
-    const mailOptions = {
-      from: `"${FROM_NAME}" <${FROM_EMAIL}>`,
+    await transporter.sendMail({
+      from: FROM_EMAIL,
       to,
       subject,
-      html: html || undefined,
-      text: text || undefined,
-      replyTo: replyTo || undefined,
-      cc: cc || undefined,
-      bcc: bcc || undefined,
-      // optional headers for tracking/tenant context
-      headers: {
-        ...(organizationId ? { "X-Organization-Id": String(organizationId) } : {}),
-        ...(meta ? { "X-Meta": JSON.stringify(meta).slice(0, 900) } : {}),
-      },
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-
-    return res.json({
-      ok: true,
-      messageId: info.messageId,
-      accepted: info.accepted || [],
-      rejected: info.rejected || [],
+      text,
+      html,
     });
+
+    res.json({ success: true });
   } catch (err) {
-    console.error("send-email error:", err);
-    return res.status(500).json({
+    console.error("❌ Email send error:", err);
+    res.status(500).json({
       error: "Email send failed",
-      detail: String(err?.message || err),
+      detail: err.message,
     });
   }
 });
 
-// Catch-all (helps when you open the domain in browser)
+/* =========================
+   HEALTH CHECK
+========================= */
 app.get("/", (req, res) => {
-  res.send("CapitalPro Email Service is running. Use /health or POST /send-email");
+  res.send("CapitalPro Email Service is running");
 });
 
-// ---- Start ----
+/* =========================
+   START SERVER
+========================= */
 app.listen(PORT, () => {
-  console.log(`Email service listening on :${PORT}`);
+  console.log(`🚀 Email service listening on port ${PORT}`);
 });
-
